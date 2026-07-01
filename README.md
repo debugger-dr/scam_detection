@@ -3,13 +3,14 @@
 A machine-learning study of credit-card fraud detection that treats the **0.17% class
 imbalance as the central problem**, not an afterthought. It reproduces a common
 methodological mistake seen in many fraud-detection notebooks and shows what defensible
-numbers actually look like.
+numbers actually look like — packaged as a reusable Python project, not just a notebook.
 
-> **TL;DR** — On the public ULB credit-card dataset, an XGBoost model with cost-sensitive
-> weighting reaches **PR-AUC 0.88** on a held-out, genuinely imbalanced test set, catching
-> **~84% of fraud at ~85% precision** — and up to **90% of fraud** once the decision
-> threshold is tuned to a business cost. A popular shortcut (applying SMOTE before the
-> train/test split) instead reports a fake **~0.99 on every metric**; this project shows why.
+> **TL;DR** — On the public ULB credit-card dataset, gradient-boosted models (XGBoost and
+> LightGBM) reach **PR-AUC ≈ 0.87** on a held-out, genuinely imbalanced test set, catching
+> **~84–86% of fraud** at high precision — and **~90% of fraud** once the decision threshold is
+> tuned to a business cost *on validation, not on test*. A popular shortcut (applying SMOTE
+> before the train/test split) instead reports a fake **~0.99 on every metric**; this project
+> shows why.
 
 ---
 
@@ -25,62 +26,67 @@ the usual ML habits:
   notebooks is oversampling (SMOTE) the *entire* dataset and *then* splitting into
   train/test. Synthetic copies of test points leak into training, and the metrics become
   fiction.
+- **Even the "right" decisions can leak.** Tuning the decision threshold on the test set is
+  itself a subtle leak. Here the threshold is chosen on a separate **validation** split.
 
-This repository is a worked, end-to-end answer to both pitfalls.
+This repository is a worked, end-to-end answer to all three pitfalls.
 
-## Two common approaches this addresses
+## What this implementation does
 
-Public fraud-detection notebooks tend to fall into two camps:
-
-| Approach | Typical models | Imbalance handling | Observation |
-|----------|----------------|--------------------|-------------|
-| **Methodologically sound** | Logistic Regression, Decision Tree, Random Forest | SMOTE + random undersampling | Evaluates on the imbalanced test set with ROC-AUC — defensible, though ROC-AUC flatters rare-event performance. |
-| **The leaky shortcut** | XGBoost | SMOTE | SMOTE applied to the **full set before the split**, producing reported scores of **~0.99 on every metric** — too good to be real. |
-
-This project keeps the strengths of the first and uses the second as a cautionary baseline:
-it reproduces the leak, then fixes the methodology.
-
-## What this implementation does differently
-
-1. **Reproduces the leakage** — applies SMOTE before the split and recovers the same inflated
+1. **Reproduces the leakage** — applies SMOTE before the split and recovers the inflated
    ~0.99 scores, then shows the honest numbers side by side.
-2. **Handles imbalance correctly** — cost-sensitive learning (`class_weight` /
+2. **Splits three ways** — stratified **train / validation / test**. Train fits and tunes the
+   models; validation drives calibration and threshold selection; test is touched exactly
+   once, for the final report.
+3. **Handles imbalance correctly** — cost-sensitive learning (`class_weight` /
    `scale_pos_weight`) and SMOTE applied **strictly inside cross-validation folds** via an
    `imblearn` pipeline.
-3. **Uses the right metric** — **PR-AUC (Average Precision)** as the headline number, not
-   accuracy and not ROC-AUC (which stays optimistically high even for a useless model here).
-4. **Tunes the decision threshold to a business cost** (a missed fraud costed at 100× a false
-   alarm) instead of blindly using 0.5.
-5. **Compares four models** — Logistic Regression, Random Forest, XGBoost, and an
-   unsupervised Isolation Forest.
+4. **Uses the right metric** — **PR-AUC (Average Precision)** as the headline number, each with
+   a **bootstrap 95% confidence interval**, not accuracy and not ROC-AUC (which stays
+   optimistically high even for a useless model here).
+5. **Calibrates probabilities** — the decision threshold is a probability cut-off, so the
+   headline model's probabilities are calibrated on validation and checked with a reliability
+   curve and Brier score.
+6. **Tunes the decision threshold to a business cost** (a missed fraud costed at 100× a false
+   alarm) **on validation**, not by peeking at test.
+7. **Compares five models** — Logistic Regression (cost-sensitive), Logistic Regression with
+   in-CV SMOTE, **LightGBM**, XGBoost, and an unsupervised Isolation Forest.
 
 ## Results (held-out, imbalanced test set — 98 frauds in 56,962 transactions)
 
-| Model | PR-AUC | ROC-AUC | Precision | Recall | F1 |
-|-------|:------:|:-------:|:---------:|:------:|:--:|
-| **XGBoost** (`scale_pos_weight`) | **0.879** | 0.976 | 0.854 | 0.837 | 0.845 |
-| Random Forest (`class_weight`) | 0.858 | 0.952 | 0.961 | 0.755 | 0.846 |
-| LogReg + SMOTE (correct, in-CV) | 0.723 | 0.970 | 0.056 | 0.918 | 0.105 |
-| LogReg (`class_weight`) | 0.720 | 0.971 | 0.059 | 0.918 | 0.111 |
-| Isolation Forest (unsupervised) | 0.137 | 0.954 | — | — | — |
+| Model | PR-AUC | 95% CI | ROC-AUC | Precision | Recall | F1 |
+|-------|:------:|:------:|:-------:|:---------:|:------:|:--:|
+| **LightGBM** | **0.871** | [0.805, 0.929] | 0.974 | 0.965 | 0.837 | 0.896 |
+| **XGBoost** (`scale_pos_weight`) | **0.869** | [0.803, 0.929] | 0.976 | 0.884 | 0.857 | 0.870 |
+| LogReg + SMOTE (correct, in-CV) | 0.722 | [0.630, 0.816] | 0.972 | 0.058 | 0.898 | 0.108 |
+| LogReg (`class_weight`) | 0.719 | [0.628, 0.813] | 0.972 | 0.059 | 0.908 | 0.111 |
+| Isolation Forest (unsupervised) | 0.119 | [0.080, 0.175] | 0.952 | — | — | — |
 
-*Metrics at the default 0.5 threshold; PR-AUC / ROC-AUC are threshold-independent.*
+*P/R/F1 at the default 0.5 threshold; PR-AUC / ROC-AUC are threshold-independent. GBMs are
+hyper-parameter tuned via randomized search on the training split. Numbers are regenerated by
+`make train` and stored in `artifacts/metrics.json`.*
 
 **The leaky shortcut for comparison:** a plain logistic regression trained after
-SMOTE-before-split scores **ROC-AUC 0.992, PR-AUC 0.993, recall 0.94** — on a test set that
+SMOTE-before-split scores **ROC-AUC ≈ 0.99, PR-AUC ≈ 0.99, recall ≈ 0.94** — on a test set that
 has been synthetically inflated to 50% fraud. None of it transfers to reality.
 
-### Three things the numbers prove
+### Four things the numbers prove
 
 - **Honest SMOTE is not a magic boost.** Done correctly (inside CV), SMOTE + LogReg scores
-  PR-AUC **0.723** — statistically the same as cost-weighted LogReg (**0.720**). The huge
-  gains people report come from leakage, not from SMOTE.
+  PR-AUC **0.722** — statistically indistinguishable from cost-weighted LogReg (**0.719**);
+  their confidence intervals almost completely overlap. The huge gains people report come from
+  leakage, not from SMOTE.
 - **ROC-AUC misleads on rare events.** *Every* model scores ROC-AUC ≥ 0.95 — including the
-  Isolation Forest whose PR-AUC is a near-useless **0.137**. PR-AUC separates the real
-  performers; ROC-AUC does not.
-- **The threshold is a business lever.** Moving XGBoost's cut-off from 0.50 to the
-  cost-optimal **0.006** lifts recall from **0.84 → 0.90** (fewer missed frauds) at the cost
-  of precision (**0.85 → 0.47**) — a deliberate, quantified trade, not an accident.
+  Isolation Forest whose PR-AUC is a near-useless **0.119**. PR-AUC (and its CI) separates the
+  real performers; ROC-AUC does not.
+- **Imbalance handling is model-specific.** XGBoost benefits from a large `scale_pos_weight`
+  (~578). LightGBM is *destabilised* by it — heavy positive weighting plus row-bagging starves
+  its leaf-wise trees of the ~295 training frauds and **collapses precision** (PR-AUC falls to
+  ~0.02 while ROC-AUC stays ~0.90). With default weighting it matches XGBoost. Cargo-culting one
+  recipe across models is a mistake.
+- **The threshold is a business lever.** Moving the headline model's cut-off from 0.50 to the
+  cost-optimal **~0.006** (chosen on validation) lifts recall to **~0.90** (fewer missed frauds)
+  at the cost of precision — a deliberate, quantified trade dictated by the 100:1 cost ratio.
 
 ## The dataset
 
@@ -89,63 +95,88 @@ has been synthetically inflated to 50% fraud. None of it transfers to reality.
 
 - `V1`–`V28` — anonymised **PCA components** (already decorrelated and scaled).
 - `Amount` — transaction value (the only feature this project rescales).
+- `Time` — seconds elapsed from the first transaction.
 - `Class` — target: `1` = fraud, `0` = legitimate.
 
 The CSV is **not committed** (≈148 MB). It is fetched reproducibly — **no Kaggle login
-required** — via OpenML:
-
-```python
-from sklearn.datasets import fetch_openml
-df = fetch_openml("creditcard", version=1, as_frame=True).frame
-df["Class"] = df["Class"].astype(int)
-df.to_csv("data/creditcard.csv", index=False)
-```
+required** — from OpenML by `make data`.
 
 ## Repository layout
 
 ```
 fraud-detection/
-├── credit-card-fraud-detection.ipynb   # the analysis (run top-to-bottom, outputs embedded)
-├── build_notebook.py                   # script that generates the notebook from source
+├── README.md
+├── pyproject.toml                # packaging, deps, pytest/ruff config
 ├── requirements.txt
-├── data/
-│   └── creditcard.csv                  # fetched locally, not version-controlled
-└── README.md
+├── Makefile                      # setup / data / train / evaluate / test / report
+├── config/
+│   └── default.yaml              # seed, split ratios, cost ratio, model + tuning settings
+├── data/                         # creditcard.csv is fetched here (gitignored)
+├── artifacts/                    # models.joblib, metrics.json, figures/ (gitignored)
+├── src/fraud_detection/
+│   ├── config.py                 # typed config loaded from YAML
+│   ├── data.py                   # OpenML fetch, load, stratified 3-way split
+│   ├── features.py               # Amount scaling (fit on train only)
+│   ├── models.py                 # the five model factories
+│   ├── tuning.py                 # randomized hyper-parameter search for the GBMs
+│   ├── calibration.py            # probability calibration + reliability + Brier
+│   ├── threshold.py              # cost-based threshold selection
+│   ├── evaluation.py             # metrics, bootstrap CIs, comparison table
+│   ├── plotting.py               # PR/ROC, cost, calibration, importance, confusion plots
+│   ├── pipeline.py               # end-to-end orchestration -> artifacts
+│   └── cli.py                    # `fraud-detection {fetch-data,train,evaluate,report}`
+├── scripts/                      # thin wrappers around the CLI
+├── notebooks/
+│   └── credit-card-fraud-detection.ipynb   # narrative report, imports from src/
+└── tests/                        # split integrity, scaler leakage, threshold, metrics
 ```
 
 ## How to run
 
 ```bash
-python3 -m pip install -r requirements.txt
+# 1. Install (editable, with notebook + dev extras)
+make setup            # or: python3 -m pip install -e ".[notebook,dev]"
 
-# 1. fetch the dataset into data/creditcard.csv (snippet above), then:
-jupyter notebook credit-card-fraud-detection.ipynb
-# or execute headless:
-jupyter nbconvert --to notebook --execute --inplace credit-card-fraud-detection.ipynb
+# 2. Fetch the dataset into data/creditcard.csv (from OpenML, no login)
+make data
+
+# 3. Run the full pipeline: split, tune, fit, calibrate, choose threshold, save artifacts
+make train            # writes artifacts/metrics.json and artifacts/figures/
+
+# 4. Re-print the saved comparison table + confidence intervals
+make evaluate
+
+# 5. Run the unit tests
+make test
+
+# 6. Execute the narrative notebook headless
+make report
 ```
 
-Everything is seeded (`RANDOM_STATE = 42`); a full run takes ~3 minutes on a laptop CPU.
+Everything is seeded (`seed: 42` in `config/default.yaml`). A tuned run takes a few minutes on
+a laptop CPU; set `--no-tuning` (or `tuning.enabled: false`) for a faster pass.
+
+> **macOS note:** XGBoost and LightGBM need the OpenMP runtime. If you see a `libomp.dylib`
+> load error, install it with `brew install libomp`.
 
 ## Notebook contents
 
 1. Setup & reproducible data load
-2. EDA — imbalance, `Amount` distribution, per-feature fraud correlation, top discriminative features
+2. EDA — imbalance, `Amount` distribution, top discriminative features
 3. **The leakage trap** — reproducing the inflated ~0.99 scores
-4. An honest experimental setup (split → scale → evaluate on real test only)
-5. Cost-sensitive models (LogReg, Random Forest, XGBoost)
-6. **SMOTE done right** (inside cross-validation)
-7. Model comparison on the imbalanced test set
-8. Precision-Recall & ROC curves
-9. **Cost-based threshold selection** with confusion matrices
+4. An honest train/validation/test setup
+5. Cost-sensitive and in-CV-SMOTE models + bootstrap CIs
+6. Model comparison on the imbalanced test set
+7. Precision-Recall & ROC curves for the best model
+8. **Probability calibration** — reliability curve & Brier score
+9. **Cost-based threshold selection** (on validation) with a confusion matrix
 10. Feature importance
-11. Unsupervised Isolation Forest contrast
-12. Final scoreboard & takeaways
+11. Takeaways
 
 ## Possible next steps
 
-Hyperparameter search, probability calibration, SHAP explanations for investigator-facing
-reason codes, and **time-aware validation** (train on the past, test on the future) to mirror
-real deployment.
+SHAP explanations for investigator-facing reason codes, and **time-aware validation** (train on
+the past, test on the future, using the `Time` column) to mirror real deployment.
 
 ## Acknowledgements
 

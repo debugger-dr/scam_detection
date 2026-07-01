@@ -1,0 +1,2 @@
+# The ULB credit-card dataset (~148 MB) is fetched here and never committed.
+# Run `make data` (or `fraud-detection fetch-data`) to populate creditcard.csv.
